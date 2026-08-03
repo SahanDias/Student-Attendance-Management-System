@@ -1,0 +1,27 @@
+# Python
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+**/.venv/
+
+# Environment
+**/.env
+**/.env.local
+
+# Storage
+backend/storage/uploads/
+backend/storage/steps/
+
+# Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/.lovable/
+
+# VS Code
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
