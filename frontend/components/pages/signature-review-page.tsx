@@ -149,3 +149,31 @@ function SessionListView({ onSelect }: { onSelect: (session: SignatureSessionSum
     </div>
   );
 }
+
+export function SignatureReviewPage() {
+  const queryClient = useQueryClient();
+  const [selectedSession, setSelectedSession] = useState<SignatureSessionSummary | null>(null);
+  const [flaggedOnly, setFlaggedOnly] = useState(false);
+
+  const itemsQuery = useQuery({
+    queryKey: ["signature-session-items", selectedSession?.session_id],
+    queryFn: () => getSignatureSessionItems(selectedSession!.session_id),
+    enabled: selectedSession !== null,
+  });
+  // Stored decisions from a previous visit -- merged below by
+  // (student_index, session_id) so a card an operator already resolved
+  // stays resolved after a reload instead of resetting to its buttons.
+  const reviews = useQuery({ queryKey: ["signature-reviews"], queryFn: listSignatureReviews });
+
+  const items = useMemo(
+    () => (itemsQuery.data ?? []).filter((i) => (flaggedOnly ? i.flagged : true)),
+    [itemsQuery.data, flaggedOnly],
+  );
+
+  const resolvedByKey = useMemo(() => {
+    const map = new Map<string, "confirmed" | "flagged">();
+    for (const r of reviews.data ?? []) {
+      if (r) map.set(reviewKey(r.student_index, r.session_id), r.decision);
+    }
+    return map;
+  }, [reviews.data]);
