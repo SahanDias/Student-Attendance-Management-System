@@ -1,3 +1,11 @@
+// Upload page for processing photographed attendance sheets.
+//
+// This file implements a client-side React page that uploads a photographed
+// signing sheet plus its exported `info.xml` roster, starts a server-side
+// OpenCV processing pipeline, and presents live progress and final results.
+//
+// Note: Per instructions, only comments were added to improve reader
+// understanding. No code, names, or logic were changed.
 "use client";
 
 import { useQueryClient } from "@tanstack/react-query";
@@ -40,6 +48,9 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
 }
 
+// Utility: small helper to display human-friendly file sizes. Kept deliberately
+// simple because this UI only needs approximate readability for uploaded files.
+
 function DropZone({
   label,
   hint,
@@ -78,6 +89,12 @@ function DropZone({
         over ? "border-primary bg-accent/60" : "border-border bg-card",
       )}
     >
+      {/*
+        DropZone: small reusable file input UI used both for the sheet image and
+        the exported `info.xml`. Supports drag-and-drop and a hidden native
+        file input. `inputRef` triggers the OS file picker so the visual
+        structure doesn't have to include a visible <input> element.
+      */}
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="text-sm font-medium text-foreground">{label}</p>
@@ -136,6 +153,10 @@ function DropZone({
   );
 }
 
+// The DropZone intentionally keeps the visual markup separate from the
+// native file input: this avoids browser default styling while preserving
+// accessibility via the OS picker when users click the area.
+
 type Phase = "idle" | "processing" | "failed" | "done";
 
 export function UploadPage() {
@@ -151,6 +172,10 @@ export function UploadPage() {
   const [headerRows, setHeaderRows] = useState(() => loadProcessingSettings().headerRows);
   const [signatureCol, setSignatureCol] = useState("-1");
   const [simulateFailure, setSimulateFailure] = useState(false);
+
+  // `simulateFailure` is a demo/testing toggle that asks the backend to
+  // artificially fail at a specific pipeline step. Useful for verifying
+  // the UI's error handling without needing a real server incident.
 
   const [phase, setPhase] = useState<Phase>("idle");
   const [steps, setSteps] = useState<StepState[]>(initialSteps());
@@ -173,7 +198,15 @@ export function UploadPage() {
     return () => URL.revokeObjectURL(url);
   }, [image]);
 
+  // Important: `createObjectURL` produces a browser-managed blob URL that
+  // must be revoked when the component no longer needs it. The effect's
+  // cleanup ensures we don't leak memory when users swap or remove images.
+
   useEffect(() => () => unsubscribe.current?.(), []);
+
+  // Ensure any live processing subscription is cancelled when this page
+  // unmounts. Without this cleanup we'd keep receiving events for a
+  // session even after navigating away.
 
   const reset = () => {
     unsubscribe.current?.();
@@ -182,6 +215,10 @@ export function UploadPage() {
     setError(null);
     setResults([]);
   };
+
+  // `reset` returns the UI to a clean state while cancelling any active
+  // backend subscription. This is used both when starting a new upload and
+  // when the user explicitly requests a fresh upload attempt.
 
   const start = async () => {
     if (!image || !xml) return;
@@ -237,7 +274,17 @@ export function UploadPage() {
     }
   };
 
+  // `start` encapsulates the full upload + processing flow:
+  // 1. POST the files to create a session
+  // 2. Request the server to begin processing with the current options
+  // 3. Subscribe to live step events and update UI state as events arrive
+  // 4. On completion, fetch final results and invalidate stale caches
+  // Any failure along the way sets an error and flips the UI into `failed`.
+
   const lastDone = [...steps].reverse().find((s) => s.status === "done");
+
+  // Convenience value: the most recently completed pipeline step, used to
+  // decide which image to show in the before/after slider.
 
   return (
     <div className="space-y-6">
