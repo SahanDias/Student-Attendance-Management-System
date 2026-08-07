@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
-import { Search } from "lucide-react";
+import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { PageHeader } from "@/components/page-header";
@@ -28,12 +28,50 @@ import {
 } from "@/components/ui/table";
 import { listSessions } from "@/services/sessions.service";
 
+type SortKey = "session_date" | "subject_code" | "present_count" | "students_detected";
+type SortDir = "asc" | "desc";
+
+function SortHead({
+  label,
+  keyName,
+  sort,
+  dir,
+  onToggle,
+}: {
+  label: string;
+  keyName: SortKey;
+  sort: SortKey;
+  dir: SortDir;
+  onToggle: (key: SortKey) => void;
+}) {
+  return (
+    <TableHead>
+      <button
+        type="button"
+        onClick={() => onToggle(keyName)}
+        className="inline-flex items-center gap-1 hover:text-foreground"
+      >
+        {label}
+        {sort === keyName ? (
+          dir === "asc" ? (
+            <ArrowUp className="size-3" aria-hidden />
+          ) : (
+            <ArrowDown className="size-3" aria-hidden />
+          )
+        ) : null}
+      </button>
+    </TableHead>
+  );
+}
+
 export function SessionsPage() {
   const sessions = useQuery({ queryKey: ["sessions"], queryFn: listSessions });
   const [q, setQ] = useState("");
   const [subject, setSubject] = useState("all");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [sort, setSort] = useState<SortKey>("session_date");
+  const [dir, setDir] = useState<SortDir>("desc");
 
   const subjects = useMemo(
     () => Array.from(new Set((sessions.data ?? []).map((s) => s.subject_code))),
@@ -41,7 +79,7 @@ export function SessionsPage() {
   );
 
   const rows = useMemo(() => {
-    return (sessions.data ?? []).filter((s) => {
+    const filtered = (sessions.data ?? []).filter((s) => {
       const matchesQ =
         !q ||
         s.subject_code.toLowerCase().includes(q.toLowerCase()) ||
@@ -52,7 +90,24 @@ export function SessionsPage() {
       const matchesTo = !to || s.session_date <= to;
       return matchesQ && matchesSubject && matchesFrom && matchesTo;
     });
-  }, [sessions.data, q, subject, from, to]);
+    return filtered.sort((a, b) => {
+      const av = a[sort];
+      const bv = b[sort];
+      const cmp =
+        typeof av === "number" && typeof bv === "number"
+          ? av - bv
+          : String(av).localeCompare(String(bv));
+      return dir === "asc" ? cmp : -cmp;
+    });
+  }, [sessions.data, q, subject, from, to, sort, dir]);
+
+  const toggleSort = (key: SortKey) => {
+    if (sort === key) setDir(dir === "asc" ? "desc" : "asc");
+    else {
+      setSort(key);
+      setDir("desc");
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -155,11 +210,35 @@ export function SessionsPage() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Subject</TableHead>
+                  <SortHead
+                    label="Date"
+                    keyName="session_date"
+                    sort={sort}
+                    dir={dir}
+                    onToggle={toggleSort}
+                  />
+                  <SortHead
+                    label="Subject"
+                    keyName="subject_code"
+                    sort={sort}
+                    dir={dir}
+                    onToggle={toggleSort}
+                  />
                   <TableHead>Session id</TableHead>
-                  <TableHead>Detected</TableHead>
-                  <TableHead>Present</TableHead>
+                  <SortHead
+                    label="Detected"
+                    keyName="students_detected"
+                    sort={sort}
+                    dir={dir}
+                    onToggle={toggleSort}
+                  />
+                  <SortHead
+                    label="Present"
+                    keyName="present_count"
+                    sort={sort}
+                    dir={dir}
+                    onToggle={toggleSort}
+                  />
                   <TableHead>Absent</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Action</TableHead>
