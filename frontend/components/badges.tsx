@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import type { SessionStatus } from "@/types/api";
 
 /** Presence is never conveyed by colour alone — icon + text label always present. */
+// Render a compact badge for the user's presence state.
 export function PresenceBadge({ present }: { present: boolean }) {
   return (
     <span
@@ -24,6 +25,7 @@ export function PresenceBadge({ present }: { present: boolean }) {
   );
 }
 
+// Map API session states to readable labels and visual styling.
 const STATUS_MAP: Partial<Record<SessionStatus, { label: string; className: string; icon: typeof Check }>> =
   {
     uploaded: {
@@ -62,6 +64,7 @@ const STATUS_MAP: Partial<Record<SessionStatus, { label: string; className: stri
 // `status` is only typed as SessionStatus -- at runtime it's whatever the API
 // (or a future status value) actually sends, so a lookup miss must render
 // gracefully rather than crash on an undefined meta.
+// Fall back gracefully when an unknown or unexpected status value is received.
 export function StatusBadge({ status }: { status: SessionStatus | string | undefined | null }) {
   const meta = status ? STATUS_MAP[status as SessionStatus] : undefined;
   const label = meta?.label ?? (status ? status.replace(/_/g, " ") : "Unknown");
@@ -80,6 +83,7 @@ export function StatusBadge({ status }: { status: SessionStatus | string | undef
   );
 }
 
+// Show attendance as a compact percentage bar with a simple threshold-based tone.
 export function AttendanceBar({ value, label }: { value?: number | null; label?: string }) {
   const percentage = Number.isFinite(value ?? 0) ? (value ?? 0) : 0;
   const tone = percentage >= 75 ? "bg-present" : percentage >= 50 ? "bg-review" : "bg-absent";
@@ -100,6 +104,7 @@ export function AttendanceBar({ value, label }: { value?: number | null; label?:
   );
 }
 
+// Show the ink ratio as a minimal bar and a precise numeric value.
 export function InkRatioBar({ value }: { value: number }) {
   const pct = Math.min(100, value * 400);
   return (
