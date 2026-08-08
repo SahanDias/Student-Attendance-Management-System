@@ -40,3 +40,40 @@ function formatUploadedAt(value: string | undefined): string {
   if (Number.isNaN(parsed.getTime())) return "—";
   return parsed.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
+
+<PageHeader
+  title="Dashboard"
+  description="Processing throughput and attendance health across every sheet read by the OpenCV pipeline."
+  actions={
+    <Button asChild size="sm">
+      <Link href="/upload">Upload a sheet</Link>
+    </Button>
+  }
+/>;
+
+<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+  <StatCard
+    label="Total sheets processed"
+    value={sessions.isPending ? "—" : String(sessions.data?.length ?? 0)}
+    hint="Sessions stored in MongoDB"
+    icon={FileStack}
+  />
+  <StatCard
+    label="Total students"
+    value={students.isPending ? "—" : String(students.data?.length ?? 0)}
+    hint="Enrolled across all batches"
+    icon={Users}
+  />
+  <StatCard
+    label="Overall attendance rate"
+    value={sessions.isPending ? "—" : `${rate.toFixed(1)}%`}
+    hint={`${totalPresent} of ${totalDetected} detected rows`}
+    icon={Percent}
+  />
+  <StatCard
+    label="Flagged signatures"
+    value={sessions.isPending ? "—" : String(flagged)}
+    hint="Awaiting operator verification"
+    icon={Flag}
+  />
+</div>;
