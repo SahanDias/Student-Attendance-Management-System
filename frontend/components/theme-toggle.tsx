@@ -9,7 +9,9 @@ export function ThemeToggle() {
   const [dark, setDark] = useState(false);
 
   const toggle = () => {
-    setDark(!dark);
+    const next = !dark;
+    setDark(next);
+    document.documentElement.classList.toggle("dark", next);
   };
 
   return (
