@@ -131,3 +131,40 @@ function formatUploadedAt(value: string | undefined): string {
     )}
   </CardContent>
 </Card>;
+
+<div className="overflow-x-auto">
+  <Table>
+    <TableHeader>
+      <TableRow>
+        <TableHead>Date</TableHead>
+        <TableHead>Uploaded</TableHead>
+        <TableHead>Subject</TableHead>
+        <TableHead>Detected</TableHead>
+        <TableHead>Present</TableHead>
+        <TableHead>Absent</TableHead>
+        <TableHead>Status</TableHead>
+        <TableHead className="text-right">Action</TableHead>
+      </TableRow>
+    </TableHeader>
+    <TableBody>
+      {recent.map((s) => (
+        <TableRow key={s.session_id}>
+          <TableCell className="text-num">{s.session_date}</TableCell>
+          <TableCell className="text-num">{formatUploadedAt(s.processed_at)}</TableCell>
+          <TableCell className="text-num font-medium">{s.subject_code}</TableCell>
+          <TableCell className="text-num">{s.students_detected}</TableCell>
+          <TableCell className="text-num text-present">{s.present_count}</TableCell>
+          <TableCell className="text-num text-absent">{s.absent_count}</TableCell>
+          <TableCell>
+            <StatusBadge status={s.status} />
+          </TableCell>
+          <TableCell className="text-right">
+            <Button asChild variant="ghost" size="sm">
+              <Link href={`/sessions/${s.session_id}`}>View</Link>
+            </Button>
+          </TableCell>
+        </TableRow>
+      ))}
+    </TableBody>
+  </Table>
+</div>;
