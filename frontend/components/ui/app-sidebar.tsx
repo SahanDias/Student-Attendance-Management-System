@@ -17,17 +17,3 @@ import { LayoutDashboard, PenLine, ScanLine, Settings, Users, Layers } from "luc
     )}
   </div>
 </SidebarHeader>;
-
-<SidebarContent>
-  <SidebarGroup>
-    <SidebarGroupLabel>Workspace</SidebarGroupLabel>
-    <SidebarGroupContent>
-      <SidebarMenu>
-        {items.map((item) => {
-          const active =
-            "exact" in item && item.exact ? pathname === item.url : pathname.startsWith(item.url);
-        })}
-      </SidebarMenu>
-    </SidebarGroupContent>
-  </SidebarGroup>
-</SidebarContent>;
