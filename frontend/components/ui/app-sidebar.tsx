@@ -17,3 +17,27 @@ import { LayoutDashboard, PenLine, ScanLine, Settings, Users, Layers } from "luc
     )}
   </div>
 </SidebarHeader>;
+
+<SidebarContent>
+  <SidebarGroup>
+    <SidebarGroupLabel>Workspace</SidebarGroupLabel>
+    <SidebarGroupContent>
+      <SidebarMenu>
+        {items.map((item) => {
+          const active =
+            "exact" in item && item.exact ? pathname === item.url : pathname.startsWith(item.url);
+          return (
+            <SidebarMenuItem key={item.title}>
+              <SidebarMenuButton asChild isActive={active} tooltip={item.title}>
+                <Link href={item.url} className="flex items-center gap-2">
+                  <item.icon className="size-4" aria-hidden />
+                  <span>{item.title}</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          );
+        })}
+      </SidebarMenu>
+    </SidebarGroupContent>
+  </SidebarGroup>
+</SidebarContent>;
