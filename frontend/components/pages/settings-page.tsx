@@ -306,7 +306,7 @@ export function SettingsPage() {
     // initial state above is what both the server and the client's first
     // render use, so this can't run any earlier without touching `window`
     // during render.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+  
     setSettings(loadProcessingSettings());
   }, []);
 
