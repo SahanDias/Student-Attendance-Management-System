@@ -35,6 +35,8 @@ class GridDetector:
         horizontal_threshold_fraction: float = 0.25,
         vertical_threshold_fraction: float = 0.20,
         peak_group_distance: int = 10,
+        boundary_strip_half_width: int = 3,
+        boundary_presence_ratio: float = 0.5,
         min_cols: int = 4,
         storage: StorageManager | None = None,
         save_debug_images: bool = True,
@@ -48,6 +50,13 @@ class GridDetector:
         self.horizontal_threshold_fraction = horizontal_threshold_fraction
         self.vertical_threshold_fraction = vertical_threshold_fraction
         self.peak_group_distance = peak_group_distance
+        # Used by row validation: a global column boundary only counts as
+        # real for a given row if a vertical rule is actually drawn within
+        # that row's own y-band, sampled in a +/-3px strip around the
+        # boundary's x position and requiring it to be set for at least 50%
+        # of the row's height.
+        self.boundary_strip_half_width = boundary_strip_half_width
+        self.boundary_presence_ratio = boundary_presence_ratio
         self.min_cols = min_cols
         self.storage = storage or StorageManager()
         # "Enable this by default for now": debug saving is on unconditionally
@@ -124,6 +133,7 @@ class GridDetector:
             ]
             rows.append(row)
 
+        rows = self._validate_rows(rows, xs, vertical_lines)
         rows = self._filter_by_column_count(rows)
 
         if self.save_debug_images:
@@ -161,6 +171,151 @@ class GridDetector:
         groups.append(current)
 
         return [int(round(sum(group) / len(group))) for group in groups]
+
+    def _validate_rows(
+        self, rows: list[list[Box]], xs: list[int], vertical_lines: np.ndarray
+    ) -> list[list[Box]]:
+        """Two tables of different width on the same page (e.g. a 5-column
+        student table above a 3-column lecturer table) produce rows that all
+        inherit the *same* column count, because cells are built by crossing
+        one global xs/ys grid rather than being discovered per-row -- so the
+        modal-column-count filter alone can no longer tell them apart.
+
+        This checks, per row, which of the global column boundaries actually
+        have a vertical rule drawn within that row's own y-band (rather than
+        just being a boundary that happens to apply to some other row on the
+        page), then keeps only the largest contiguous run of rows that agree
+        on how many of those boundaries are real. A second, narrower table
+        forms its own shorter run of rows with a different confirmed count
+        and gets dropped.
+        """
+        total_detected = len(rows)
+        height, width = vertical_lines.shape[:2]
+
+        counted: list[tuple[list[Box], int]] = []
+        for row_index, row in enumerate(rows):
+            if not row:
+                logger.info(
+                    "GridDetector: row %d is empty, dropped by validation", row_index
+                )
+                continue
+            y0 = row[0][1]
+            y1 = y0 + row[0][3]
+            band_height = y1 - y0
+            if band_height <= 0:
+                logger.info(
+                    "GridDetector: row %d y-range (%d, %d) has non-positive "
+                    "height, dropped by validation",
+                    row_index,
+                    y0,
+                    y1,
+                )
+                continue
+
+            confirmed = 0
+            for x in xs:
+                x_lo = max(x - self.boundary_strip_half_width, 0)
+                x_hi = min(x + self.boundary_strip_half_width + 1, width)
+                strip = vertical_lines[y0:y1, x_lo:x_hi]
+                if strip.size == 0:
+                    continue
+                set_rows = int(np.count_nonzero(np.any(strip > 0, axis=1)))
+                if set_rows / band_height >= self.boundary_presence_ratio:
+                    confirmed += 1
+
+            logger.info(
+                "GridDetector: row %d y-range (%d, %d) confirmed-boundary "
+                "count = %d",
+                row_index,
+                y0,
+                y1,
+                confirmed,
+            )
+
+            if confirmed >= self.min_cols:
+                counted.append((row, confirmed))
+            else:
+                logger.info(
+                    "GridDetector: row %d y-range (%d, %d) dropped by "
+                    "validation -- confirmed-boundary count %d < min_cols=%d",
+                    row_index,
+                    y0,
+                    y1,
+                    confirmed,
+                    self.min_cols,
+                )
+
+        if not counted:
+            logger.warning(
+                "GridDetector: %d row(s) detected, none survived boundary "
+                "validation (min_cols=%d)",
+                total_detected,
+                self.min_cols,
+            )
+            return []
+
+        # Largest contiguous run of GEOMETRICALLY adjacent rows: a run
+        # continues as long as each row's top edge sits exactly on the
+        # previous row's bottom edge, regardless of how their confirmed
+        # counts compare -- a single row's count dropping by one (e.g. a
+        # signature crossing a column rule) must not fracture an otherwise
+        # unbroken table. Only an actual gap (a row rejected outright by the
+        # min_cols floor above, and therefore absent from `counted`) breaks
+        # a run.
+        runs: list[list[list[Box]]] = [[counted[0][0]]]
+        run_confirmed_counts: list[list[int]] = [[counted[0][1]]]
+        for row, count in counted[1:]:
+            prev_row = runs[-1][-1]
+            prev_y1 = prev_row[0][1] + prev_row[0][3]
+            row_y0 = row[0][1]
+            if row_y0 == prev_y1:
+                runs[-1].append(row)
+                run_confirmed_counts[-1].append(count)
+            else:
+                runs.append([row])
+                run_confirmed_counts.append([count])
+
+        for run, counts in zip(runs, run_confirmed_counts):
+            run_y_start = run[0][0][1]
+            run_y_end = run[-1][0][1] + run[-1][0][3]
+            logger.info(
+                "GridDetector: run of %d row(s), confirmed-boundary counts "
+                "= %s, y-range (%d, %d)",
+                len(run),
+                counts,
+                run_y_start,
+                run_y_end,
+            )
+
+        best_run = max(runs, key=len)
+
+        for run, counts in zip(runs, run_confirmed_counts):
+            if run is best_run:
+                continue
+            run_y_start = run[0][0][1]
+            run_y_end = run[-1][0][1] + run[-1][0][3]
+            logger.info(
+                "GridDetector: dropped run of %d row(s) (confirmed-boundary "
+                "counts = %s, y-range (%d, %d)) -- not the largest "
+                "contiguous run",
+                len(run),
+                counts,
+                run_y_start,
+                run_y_end,
+            )
+
+        y_start = best_run[0][0][1]
+        y_end = best_run[-1][0][1] + best_run[-1][0][3]
+        logger.info(
+            "GridDetector: %d row(s) detected, %d survived validation "
+            "(y-range %d to %d)",
+            total_detected,
+            len(best_run),
+            y_start,
+            y_end,
+        )
+
+        return best_run
 
     def _filter_by_column_count(self, rows: list[list[Box]]) -> list[list[Box]]:
         candidates = [row for row in rows if len(row) >= self.min_cols]
