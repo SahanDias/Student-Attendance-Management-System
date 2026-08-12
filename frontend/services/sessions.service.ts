@@ -8,6 +8,11 @@ import type {
   UploadResponse,
 } from "@/types/api";
 
+import { delay, getApiBase, request, USE_MOCK } from "./api";
+import { resultsFor, sessions as mockSessions, stepsFor } from "./mock-data";
+
+export { PIPELINE_STAGES };
+
 function mapSessionSummary(raw: Record<string, unknown>): SessionSummary {
   return {
     session_id: String(raw["session_id"] ?? raw["id"] ?? ""),
@@ -21,12 +26,20 @@ function mapSessionSummary(raw: Record<string, unknown>): SessionSummary {
     header_rows: Number(raw["header_rows"] ?? 1),
     signature_col: Number(raw["signature_col"] ?? -1),
     processed_at: String(raw["processed_at"] ?? raw["uploaded_at"] ?? raw["date"] ?? ""),
-    // GET /sheets doesn't send this field today (see the image_path doc
-    // comment on SessionSummary) -- String(undefined ?? "") resolves to ""
-    // either way, which staticUrl() and the broken-image fallback treat as
-    // "no path", not as a reason to guess a different field name.
     image_path: String(raw["image_path"] ?? ""),
   };
+}
+
+export async function listSessions(): Promise<SessionSummary[]> {
+  if (USE_MOCK) {
+    await delay(500);
+    return mockSessions;
+  }
+  const raw = await request<Record<string, unknown>[]>("/sheets");
+  if (process.env.NODE_ENV === "development") {
+    console.log("[listSessions] GET /sheets raw response:", raw);
+  }
+  return raw.map(mapSessionSummary);
 }
 
 export async function getSession(id: string): Promise<SessionSummary> {
@@ -128,8 +141,6 @@ export function subscribeProcessing(
         });
       }
       if (!cancelled) {
-        // Mirrors the real backend: a distinct terminal event after the
-        // stage stream, not inferred from the last stage's own event.
         handlers.onEvent({
           status: "complete",
           session_id: id,
@@ -142,3 +153,19 @@ export function subscribeProcessing(
       cancelled = true;
     };
   }
+
+  const wsBase = getApiBase().replace(/^http/, "ws");
+  const socket = new WebSocket(`${wsBase}/sheets/ws/${id}`);
+  socket.onmessage = (msg) => {
+    try {
+      const event = JSON.parse(msg.data as string) as ProcessingEvent;
+      handlers.onEvent(event);
+      if (event.status === "failed") handlers.onError?.(event.message ?? `Failed at ${event.step}`);
+      else if (event.status === "complete") handlers.onDone?.();
+    } catch {
+      handlers.onError?.("Malformed message from processing socket");
+    }
+  };
+  socket.onerror = () => handlers.onError?.("WebSocket connection failed");
+  return () => socket.close();
+}
