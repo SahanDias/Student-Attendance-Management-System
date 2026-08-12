@@ -4,6 +4,13 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
+from app.core.storage import StorageManager
+from app.models.schemas import StepImage
+from app.services.steps.base import PipelineStep
+from app.services.steps.deskew import DeskewStep
+
+ProgressCallback = Callable[[str, int, int, str], None]
+
 
 @dataclass
 class PipelineResult:
@@ -23,8 +30,21 @@ class Pipeline:
         self.steps = sorted(steps, key=lambda step: step.order)
         self.storage = storage or StorageManager()
 
+    def run(
+        self,
+        image_path: str,
+        session_id: str,
+        progress_callback: ProgressCallback | None = None,
+    ) -> PipelineResult:
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError(f"Could not read image at {image_path}")
 
-for step in self.steps:
+        context: dict[str, Any] = {}
+        step_images: list[StepImage] = []
+        total = len(self.steps)
+
+        for step in self.steps:
             image = step.apply(image, context)
             path = step.save_visual(image, session_id, self.storage)
             step_images.append(StepImage(name=step.name, order=step.order, path=path))
@@ -53,3 +73,10 @@ for step in self.steps:
                     )
                 else:
                     context["color_aligned"] = color_resized
+
+        assert context["color_aligned"].shape[:2] == image.shape[:2], (
+            f"color_aligned {context['color_aligned'].shape[:2]} does not match "
+            f"the final binary image {image.shape[:2]}"
+        )
+
+        return PipelineResult(final_image=image, context=context, steps=step_images)
