@@ -85,3 +85,60 @@ export async function startProcessing(id: string, opts: ProcessOptions): Promise
     body: JSON.stringify(opts),
   });
 }
+
+export function subscribeProcessing(
+  id: string,
+  handlers: {
+    onEvent: (event: ProcessingEvent) => void;
+    onDone?: () => void;
+    onError?: (message: string) => void;
+    failAtStep?: number | undefined;
+  },
+): () => void {
+  if (USE_MOCK) {
+    let cancelled = false;
+    const total = PIPELINE_STAGES.length;
+    (async () => {
+      for (let i = 0; i < total; i++) {
+        const stage = PIPELINE_STAGES[i]!;
+        if (cancelled) return;
+        handlers.onEvent({ step: stage.name, order: i + 1, total, path: "", status: "running" });
+        await delay(720 + i * 90);
+        if (cancelled) return;
+        if (handlers.failAtStep && i + 1 === handlers.failAtStep) {
+          handlers.onEvent({
+            step: stage.name,
+            order: i + 1,
+            total,
+            path: "",
+            status: "failed",
+            message: `cv2.error: (-215:Assertion failed) !ssize.empty() in function 'resize' — grid detection returned 0 horizontal rules for stage "${stage.name}"`,
+          });
+          handlers.onError?.(
+            `Processing failed at "${stage.name}": the backend could not detect a table grid. Try increasing header rows or re-photographing the sheet with less skew.`,
+          );
+          return;
+        }
+        handlers.onEvent({
+          step: stage.name,
+          order: i + 1,
+          total,
+          path: `${id}/steps/${String(i + 1).padStart(2, "0")}_${stage.name.toLowerCase().replace(/ /g, "_")}.png`,
+          status: "done",
+        });
+      }
+      if (!cancelled) {
+        // Mirrors the real backend: a distinct terminal event after the
+        // stage stream, not inferred from the last stage's own event.
+        handlers.onEvent({
+          status: "complete",
+          session_id: id,
+          record_count: resultsFor(id).length,
+        });
+        handlers.onDone?.();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }
