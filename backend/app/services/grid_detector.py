@@ -1,4 +1,5 @@
 import logging
+import statistics
 from collections import Counter
 
 import cv2
@@ -37,6 +38,10 @@ class GridDetector:
         peak_group_distance: int = 10,
         boundary_strip_half_width: int = 3,
         boundary_presence_ratio: float = 0.5,
+        header_rows: int = 1,
+        header_height_diff_ratio: float = 0.25,
+        header_ink_multiplier: float = 1.3,
+        header_cv_threshold: float = 0.5,
         min_cols: int = 4,
         storage: StorageManager | None = None,
         save_debug_images: bool = True,
@@ -57,12 +62,28 @@ class GridDetector:
         # of the row's height.
         self.boundary_strip_half_width = boundary_strip_half_width
         self.boundary_presence_ratio = boundary_presence_ratio
+        self.header_rows = header_rows
+        # Used by drop_header_rows to decide whether a header is actually
+        # still present in the rows detect() returned: _validate_rows's run
+        # selection already strips a header that forms its own separate run
+        # (see _validate_rows), so this only fires when a header happens to
+        # share its confirmed-boundary run with the data rows. Three signals
+        # vote independently (header wins on 2-of-3) rather than any single
+        # absolute ink level deciding it -- a fixed ink threshold calibrated
+        # on one sheet doesn't hold up on sheets with heavier signatures.
+        self.header_height_diff_ratio = header_height_diff_ratio
+        self.header_ink_multiplier = header_ink_multiplier
+        self.header_cv_threshold = header_cv_threshold
         self.min_cols = min_cols
         self.storage = storage or StorageManager()
         # "Enable this by default for now": debug saving is on unconditionally
         # until this has been proven against enough real sheets, so a bad
         # detection can be inspected without re-running anything.
         self.save_debug_images = save_debug_images
+        # Cached by detect() so drop_header_rows -- called separately by
+        # callers after detect() returns -- can compare header vs data ink
+        # density without needing its signature changed to take the image.
+        self._last_binary_image: np.ndarray | None = None
 
     def detect(self, binary_image: np.ndarray, session_id: str = "debug") -> list[list[Box]]:
         """Return rows[row][col] of (x, y, w, h) cell boxes, top-to-bottom and
@@ -81,6 +102,7 @@ class GridDetector:
         either of those files changed.
         """
         height, width = binary_image.shape[:2]
+        self._last_binary_image = binary_image
 
         inverted = cv2.bitwise_not(binary_image)
 
@@ -142,6 +164,205 @@ class GridDetector:
             )
 
         return rows
+
+    def drop_header_rows(
+        self, rows: list[list[Box]], expected_row_count: int | None = None
+    ) -> list[list[Box]]:
+        """Remove the sheet's leading header row(s) (column titles, etc.) --
+        but only if one is actually still present. _validate_rows's run
+        selection (see _validate_rows) already strips a header that forms
+        its own separate confirmed-boundary run before detect() returns, so
+        unconditionally slicing here would then cut the first real data row
+        instead. A header only reaches this method when it happened to stay
+        adjacent to the data rows and got selected as part of the same run.
+
+        Decided by voting across three signals, dropping when at least two
+        agree -- no single signal is trusted alone, because a fixed ink
+        threshold calibrated on one sheet's handwriting doesn't generalize
+        to sheets with heavier or lighter signatures:
+
+        1. Row height: the header differs from the data rows' median height
+           by more than `header_height_diff_ratio`.
+        2. Cell-fill uniformity: every cell in a header row holds printed
+           text, so per-cell ink ratios are all similarly non-trivial (low
+           coefficient of variation); a data row's signature cell varies
+           wildly against its other cells, including near-zero when unsigned
+           (high coefficient of variation). This is scale-free -- it doesn't
+           care how much ink is on the page, only how uneven it is within a
+           row -- so it holds up regardless of how heavily a sheet's
+           students sign.
+        3. Relative ink: the header's mean ink ratio exceeds
+           `header_ink_multiplier` times the *median* (not mean) of the data
+           rows' per-row means, so one heavily-signed data row can't skew
+           the comparison the header is judged against.
+
+        If `expected_row_count` is given (the number of students listed in
+        info.xml), a hard guard runs last: however the vote came out, if
+        more rows survive than that count, leading rows are dropped until
+        they match, since detect() must never hand back more rows than
+        info.xml has students for.
+        """
+        logger.info(
+            "GridDetector: rows before drop_header_rows (header_rows=%d) = %s",
+            self.header_rows,
+            [(row[0][1], row[0][1] + row[0][3]) for row in rows],
+        )
+
+        result = self._drop_header_by_vote(rows)
+        result = self._enforce_expected_row_count(result, expected_row_count)
+
+        logger.info(
+            "GridDetector: rows after drop_header_rows = %s",
+            [(row[0][1], row[0][1] + row[0][3]) for row in result],
+        )
+        return result
+
+    def _drop_header_by_vote(self, rows: list[list[Box]]) -> list[list[Box]]:
+        if len(rows) <= self.header_rows:
+            logger.info(
+                "GridDetector: drop_header_rows -- only %d row(s) available, "
+                "nothing to compare against; keeping all rows",
+                len(rows),
+            )
+            return rows
+
+        header_candidates = rows[: self.header_rows]
+        data_rows = rows[self.header_rows :]
+
+        # Signal 1: row height vs the data rows' median.
+        header_height = statistics.median(row[0][3] for row in header_candidates)
+        data_height = statistics.median(row[0][3] for row in data_rows)
+        height_diff_ratio = (
+            abs(header_height - data_height) / data_height if data_height else 0.0
+        )
+        height_signal = height_diff_ratio > self.header_height_diff_ratio
+
+        cv_signal = False
+        ink_signal = False
+        header_cv: float | None = None
+        header_ink: float | None = None
+        data_ink_median: float | None = None
+
+        if self._last_binary_image is not None:
+            image = self._last_binary_image
+
+            header_row_ratios = [
+                self._row_cell_ink_ratios(row, image) for row in header_candidates
+            ]
+
+            # Signal 2: per-row coefficient of variation across cells --
+            # unitless, so it doesn't depend on how much ink is on the page
+            # overall, only on how uneven it is within a single row.
+            header_cvs = [
+                self._coefficient_of_variation(ratios)
+                for ratios in header_row_ratios
+                if ratios
+            ]
+            header_cv = statistics.mean(header_cvs) if header_cvs else None
+            cv_signal = header_cv is not None and header_cv < self.header_cv_threshold
+
+            # Signal 3: header's mean ink vs the MEDIAN (not mean) of the
+            # data rows' per-row means, so one heavily-signed data row can't
+            # drag the comparison point up.
+            header_row_means = [
+                statistics.mean(ratios) for ratios in header_row_ratios if ratios
+            ]
+            header_ink = statistics.mean(header_row_means) if header_row_means else None
+
+            data_row_means = [
+                statistics.mean(ratios)
+                for ratios in (
+                    self._row_cell_ink_ratios(row, image) for row in data_rows
+                )
+                if ratios
+            ]
+            data_ink_median = (
+                statistics.median(data_row_means) if data_row_means else None
+            )
+
+            ink_signal = (
+                header_ink is not None
+                and data_ink_median is not None
+                and data_ink_median > 0
+                and header_ink > data_ink_median * self.header_ink_multiplier
+            )
+
+        votes = sum([height_signal, cv_signal, ink_signal])
+        drop = votes >= 2
+
+        logger.info(
+            "GridDetector: drop_header_rows signals -- "
+            "height: diff_ratio=%.3f threshold=%.2f triggered=%s | "
+            "cell-fill CV: value=%s threshold=%.2f triggered=%s | "
+            "relative ink: header=%s data_median=%s multiplier=%.2f "
+            "triggered=%s -- votes=%d/3 -> %s",
+            height_diff_ratio,
+            self.header_height_diff_ratio,
+            height_signal,
+            f"{header_cv:.3f}" if header_cv is not None else "unavailable",
+            self.header_cv_threshold,
+            cv_signal,
+            f"{header_ink:.3f}" if header_ink is not None else "unavailable",
+            f"{data_ink_median:.3f}" if data_ink_median is not None else "unavailable",
+            self.header_ink_multiplier,
+            ink_signal,
+            votes,
+            "DROP header" if drop else "KEEP all rows",
+        )
+
+        return data_rows if drop else rows
+
+    def _enforce_expected_row_count(
+        self, rows: list[list[Box]], expected_row_count: int | None
+    ) -> list[list[Box]]:
+        """Hard guard, applied after the vote: detect() must never hand back
+        more rows than info.xml has students for. If the vote (or the
+        absence of a header at all) still leaves too many, the excess is
+        assumed to be leading rows -- a header the vote missed, or leftover
+        table furniture -- and dropped from the top until the counts match.
+        """
+        if expected_row_count is None or len(rows) <= expected_row_count:
+            return rows
+
+        drop_count = len(rows) - expected_row_count
+        logger.warning(
+            "GridDetector: drop_header_rows fallback -- %d row(s) still "
+            "exceed expected student count %d after voting; dropping %d "
+            "more leading row(s)",
+            len(rows),
+            expected_row_count,
+            drop_count,
+        )
+        return rows[drop_count:]
+
+    @staticmethod
+    def _row_cell_ink_ratios(row: list[Box], binary_image: np.ndarray) -> list[float]:
+        """Fraction of dark (ink) pixels in each of the row's cells.
+        `binary_image` follows the pipeline's BinarizeStep convention: ink
+        is dark (0) on a light (255) background.
+        """
+        ratios: list[float] = []
+        for x, y, w, h in row:
+            cell = binary_image[y : y + h, x : x + w]
+            if cell.size == 0:
+                continue
+            ink_pixels = int(np.count_nonzero(cell < 128))
+            ratios.append(ink_pixels / cell.size)
+        return ratios
+
+    @staticmethod
+    def _coefficient_of_variation(values: list[float]) -> float:
+        """Std-dev / mean of `values` -- unitless, so it measures how UNEVEN
+        the values are relative to each other regardless of their absolute
+        scale. 0 for fewer than 2 values or an all-zero mean (nothing to
+        compare).
+        """
+        if len(values) < 2:
+            return 0.0
+        mean = statistics.mean(values)
+        if mean == 0:
+            return 0.0
+        return statistics.pstdev(values) / mean
 
     def _find_line_positions(self, projection: np.ndarray, threshold_fraction: float) -> list[int]:
         """Recover line positions from a 1-D projection profile: keep
