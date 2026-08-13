@@ -65,6 +65,16 @@ class Evaluator:
         records = await db.attendance.find({"session_id": session_id}).to_list(length=None)
         detected = {record["student_index"]: bool(record.get("present")) for record in records}
 
+        return self.score(ground_truth, detected)
+
+    @staticmethod
+    def score(ground_truth: dict[str, bool], detected: dict[str, bool]) -> dict:
+        """Pure confusion-matrix scoring: no I/O, no DB. `detected` is keyed
+        by student index the same way `ground_truth` is; a student present in
+        `ground_truth` but missing from `detected` counts as not-detected.
+        Students in `detected` but absent from `ground_truth` are ignored --
+        this only ever scores against what ground truth actually covers.
+        """
         per_student = []
         true_positives = 0
         true_negatives = 0
